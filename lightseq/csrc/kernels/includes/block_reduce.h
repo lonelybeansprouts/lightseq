@@ -72,6 +72,28 @@ __inline__ __device__ void warpReduce<ReduceType::kMax, 2>(float *pval) {
 }
 
 template <>
+__inline__ __device__ void warpReduce<ReduceType::kMax, 4>(float *pval) {
+  float val0_tmp, val1_tmp, val2_tmp, val3_tmp;
+#define WarpReduceMaxOneStep(a, b)                                 \
+  val0_tmp = __shfl_xor_sync(WARP_REDUCE_MASK, *(pval), a, b);     \
+  val1_tmp = __shfl_xor_sync(WARP_REDUCE_MASK, *(pval + 1), a, b); \
+  val2_tmp = __shfl_xor_sync(WARP_REDUCE_MASK, *(pval + 2), a, b); \
+  val3_tmp = __shfl_xor_sync(WARP_REDUCE_MASK, *(pval + 3), a, b); \
+  *(pval) = max(val0_tmp, *(pval));                                \
+  *(pval + 1) = max(val1_tmp, *(pval + 1));                        \
+  *(pval + 2) = max(val2_tmp, *(pval + 2));                        \
+  *(pval + 3) = max(val3_tmp, *(pval + 3));
+
+  WarpReduceMaxOneStep(16, 32);
+  WarpReduceMaxOneStep(8, 32);
+  WarpReduceMaxOneStep(4, 32);
+  WarpReduceMaxOneStep(2, 32);
+  WarpReduceMaxOneStep(1, 32);
+#undef WarpReduceMaxOneStep
+}
+
+
+template <>
 __inline__ __device__ void warpReduce<ReduceType::kSum, 1>(float *pval) {
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 16, 32);
   *pval += __shfl_xor_sync(WARP_REDUCE_MASK, *pval, 8, 32);
@@ -251,7 +273,7 @@ __inline__ __device__ void blockReduce<ReduceType::kMax, 1>(float *pval) {
 
 template <>
 __inline__ __device__ void blockReduce<ReduceType::kMax, 2>(float *pval) {
-  const int num = 1;
+  const int num = 2;
   static __shared__ float shared[num][32];
   int lane_id = threadIdx.x & 0x1f;
   int wid = threadIdx.x >> 5;
@@ -282,7 +304,7 @@ __inline__ __device__ void blockReduce<ReduceType::kMax, 2>(float *pval) {
 
 template <>
 __inline__ __device__ void blockReduce<ReduceType::kMax, 4>(float *pval) {
-  const int num = 1;
+  const int num = 4;
   static __shared__ float shared[num][32];
   int lane_id = threadIdx.x & 0x1f;
   int wid = threadIdx.x >> 5;

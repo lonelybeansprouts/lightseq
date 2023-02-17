@@ -30,6 +30,7 @@ attn_mask: [batch_size, to_len], padding tokens are -inf,
   attn_mask=nullptr and mask_future=ture for dec-self-attn training
   attn_mask=nullptr and mask_future=false for dec-self-attn infer
 */
+
 template <typename T, int block_dim, int ele_per_thread>
 __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
                                  int to_len, bool mask_future) {
@@ -37,6 +38,100 @@ __global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
   int head_id = blockIdx.z;
   const int nhead = gridDim.z;
   const int token_per_reduce = 1;
+  typedef cub::BlockLoad<T, block_dim, ele_per_thread,
+                         cub::BLOCK_LOAD_VECTORIZE>
+      BlockLoad;
+  __shared__ typename BlockLoad::TempStorage ts_load;
+  typedef cub::BlockStore<T, block_dim, ele_per_thread,
+                          cub::BLOCK_STORE_VECTORIZE>
+      BlockStore;
+  __shared__ typename BlockStore::TempStorage ts_store;
+
+  T mval[ele_per_thread];
+  if (attn_mask) {
+    attn_mask += batch_id * to_len;
+    BlockLoad(ts_load).Load(attn_mask, mval, to_len, REDUCE_FLOAT_INF_NEG);
+  }
+
+  inp += flat_3dim(batch_id, head_id, 0, nhead, from_len * to_len);
+  for (int token_id = blockIdx.x * token_per_reduce; token_id < from_len;
+       token_id += gridDim.x * token_per_reduce) {
+    T inp_val[token_per_reduce][ele_per_thread];
+    for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
+      BlockLoad(ts_load).Load(inp + (token_id + i) * to_len, inp_val[i], to_len,
+                              REDUCE_FLOAT_INF_NEG);
+    }
+
+    /* step 1. compute max */
+    // thread local max
+    float val[token_per_reduce][ele_per_thread];
+    float l_max[token_per_reduce];
+    for (int i = 0; i < token_per_reduce; i++) {
+      l_max[i] = REDUCE_FLOAT_INF_NEG;
+      for (int j = 0; j < ele_per_thread; j++) {
+        float temp_val;
+        if (mask_future && ele_per_thread * threadIdx.x + j > token_id + i) {
+          temp_val = REDUCE_FLOAT_INF_NEG;
+        } else {
+          temp_val = (float)inp_val[i][j];
+          if (attn_mask) {
+            temp_val += (float)mval[j];
+          }
+        }
+        val[i][j] = temp_val;
+        l_max[i] = fmaxf(l_max[i], temp_val);
+      }
+    }
+    // block reduce max
+    blockReduce<ReduceType::kMax, token_per_reduce>(l_max);
+    // write shared
+    __shared__ float s_max[token_per_reduce];
+    if (threadIdx.x == 0) {
+      for (int i = 0; i < token_per_reduce; i++) {
+        s_max[i] = l_max[i];
+      }
+    }
+    __syncthreads();
+
+    /* step 2. compute sum */
+    // thread local sum
+    float l_sum[token_per_reduce];
+    for (int i = 0; i < token_per_reduce; i++) {
+      l_sum[i] = 0.f;
+      for (int j = 0; j < ele_per_thread; j++) {
+        val[i][j] = __expf(val[i][j] - s_max[i]);
+        l_sum[i] += val[i][j];
+      }
+    }
+    // block reduce sum
+    blockReduce<ReduceType::kSum, token_per_reduce>(l_sum);
+    // write shared
+    __shared__ float s_sum[token_per_reduce];
+    if (threadIdx.x == 0) {
+      for (int i = 0; i < token_per_reduce; i++) {
+        s_sum[i] = __fdividef(1.0f, l_sum[i] + EPSILON);
+      }
+    }
+    __syncthreads();
+
+    /* step 3. compute final result */
+    for (int i = 0; i < token_per_reduce && (token_id + i) < from_len; i++) {
+      for (int j = 0; j < ele_per_thread; j++) {
+        inp_val[i][j] = (T)(val[i][j] * s_sum[i]);
+      }
+      BlockStore(ts_store).Store(inp + (token_id + i) * to_len, inp_val[i],
+                                 to_len);
+    }
+  }  // blockIdx.x
+}
+
+
+template <typename T, int block_dim, int token_per_reduce, int ele_per_thread>
+__global__ void ker_attn_softmax(T *inp, const T *attn_mask, int from_len,
+                                 int to_len, bool mask_future) {
+  int batch_id = blockIdx.y;
+  int head_id = blockIdx.z;
+  const int nhead = gridDim.z;
   typedef cub::BlockLoad<T, block_dim, ele_per_thread,
                          cub::BLOCK_LOAD_VECTORIZE>
       BlockLoad;
@@ -236,9 +331,38 @@ void launch_attn_softmax<float>(float *inp, const float *attn_mask,
     grid_dim.x = 128;
     ker_attn_softmax<float, 512, 2><<<grid_dim, 512, 0, stream>>>(
         inp, attn_mask, from_len, to_len, mask_future);
-  } else {
+  } else if (to_len <= 2048) {
+    grid_dim.x = 256;
+    ker_attn_softmax<float, 1024, 2><<<grid_dim, 1024, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);
+  } else if (to_len <= 3072) {
+    grid_dim.x = 256;
+    ker_attn_softmax<float, 1024, 2, 2><<<grid_dim, 1024, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);
+  } 
+  else if (to_len <= 3072) {
+    grid_dim.x = 256;
+    ker_attn_softmax<float, 1024, 2, 3><<<grid_dim, 1024, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);
+  } 
+  else if (to_len <= 4096) {
+    grid_dim.x = 512;
+    ker_attn_softmax<float, 1024, 2, 4><<<grid_dim, 1024, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);
+  } 
+  else if (to_len <= 5120) {
+    grid_dim.x = 512;
+    ker_attn_softmax<float, 1024, 2, 5><<<grid_dim, 1024, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);
+  } 
+  else if (to_len <= 6144) {
+    grid_dim.x = 512;
+    ker_attn_softmax<float, 1024, 2, 6><<<grid_dim, 1024, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);
+  } 
+  else {
     throw std::runtime_error(
-        "Sequence length greater than 512 is currently not supported");
+        "Sequence length greater than 6148 is currently not supported");
   }
 }
 
@@ -358,6 +482,18 @@ void launch_attn_softmax_bw(T *out_grad, const T *soft_inp, int rows,
         <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
   else if (softmax_len <= 2048)
     ker_attn_softmax_bw<T, 64>
+        <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
+  else if (softmax_len <= 3072)
+    ker_attn_softmax_bw<T, 96>
+        <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
+  else if (softmax_len <= 4086)
+    ker_attn_softmax_bw<T, 128>
+        <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
+  else if (softmax_len <= 5120)
+    ker_attn_softmax_bw<T, 160>
+        <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
+  else if (softmax_len <= 6144)
+    ker_attn_softmax_bw<T, 192>
         <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
   else
     throw std::runtime_error(
