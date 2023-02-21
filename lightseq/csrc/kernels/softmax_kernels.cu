@@ -355,6 +355,16 @@ void launch_attn_softmax<float>(float *inp, const float *attn_mask,
     ker_attn_softmax<float, 1024, 2, 5><<<grid_dim, 1024, 0, stream>>>(
         inp, attn_mask, from_len, to_len, mask_future);
   } 
+  else if (to_len <= 5568){
+    grid_dim.x = 1024;
+    ker_attn_softmax<float, 928, 2, 6><<<grid_dim, 928, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);    
+  }
+  else if (to_len <= 5760){
+    grid_dim.x = 1024;
+    ker_attn_softmax<float, 960, 2, 6><<<grid_dim, 928, 0, stream>>>(
+        inp, attn_mask, from_len, to_len, mask_future);    
+  }  
   else if (to_len <= 6144) {
     grid_dim.x = 1024;
     ker_attn_softmax<float, 1024, 2, 6><<<grid_dim, 1024, 0, stream>>>(
@@ -526,23 +536,21 @@ void launch_attn_softmax_bw(T *out_grad, const T *soft_inp, int rows,
     ker_attn_softmax_bw<T, 64>
         <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
   else if (softmax_len <= 3072)
-    // ker_attn_softmax_bw<T, 96>
-    //     <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
-    ker_attn_softmax_bw_longseq<T, 1024, 4>
+    ker_attn_softmax_bw_longseq<T, 1024, 3>
         <<<512, 1024, 0, stream>>>(out_grad, soft_inp, rows, softmax_len);
-  else if (softmax_len <= 4086)
-    // ker_attn_softmax_bw<T, 128>
-    //     <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
+  else if (softmax_len <= 4096)
     ker_attn_softmax_bw_longseq<T, 1024, 4>
         <<<512, 1024, 0, stream>>>(out_grad, soft_inp, rows, softmax_len);
   else if (softmax_len <= 5120)
-    // ker_attn_softmax_bw<T, 160>
-    //     <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
     ker_attn_softmax_bw_longseq<T, 1024, 5>
         <<<512, 1024, 0, stream>>>(out_grad, soft_inp, rows, softmax_len);
+  else if (softmax_len <= 5568)
+    ker_attn_softmax_bw_longseq<T, 928, 6>
+        <<<512, 928, 0, stream>>>(out_grad, soft_inp, rows, softmax_len);  
+  else if (softmax_len <= 5760)
+    ker_attn_softmax_bw_longseq<T, 960, 6>
+        <<<512, 960, 0, stream>>>(out_grad, soft_inp, rows, softmax_len);         
   else if (softmax_len <= 6144)
-    // ker_attn_softmax_bw<T, 192>
-    //     <<<grid_dim, block_dim, 0, stream>>>(out_grad, soft_inp, softmax_len);
     ker_attn_softmax_bw_longseq<T, 1024, 6>
         <<<512, 1024, 0, stream>>>(out_grad, soft_inp, rows, softmax_len);
 
