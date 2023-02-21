@@ -178,6 +178,6 @@ if __name__ == '__main__':
         lm_outputs = model(input_ids=seqs)
         logits = lm_outputs['logits'] 
         err = logits.mean()
-        # err.backward()
+        err.backward()
         print("err: ", err)
 

@@ -332,3 +332,26 @@ __inline__ __device__ void blockReduce<ReduceType::kMax, 4>(float *pval) {
   }
   warpReduce<ReduceType::kMax, num>(pval);
 }
+
+
+
+template<typename T>
+struct SumOp {
+  __device__ __forceinline__ T operator()(const T& a, const T& b) const { return a + b; }
+};
+
+template<typename T>
+struct MaxOp {
+  __device__ __forceinline__ T operator()(const T& a, const T& b) const { return max(a, b); }
+};
+
+template<template<typename> class ReductionOp, typename T, int block_size>
+__inline__ __device__ T BlockAllReduce(T val) {
+  typedef cub::BlockReduce<T, block_size> BlockReduce;
+  __shared__ typename BlockReduce::TempStorage temp_storage;
+  __shared__ T result_broadcast;
+  T result = BlockReduce(temp_storage).Reduce(val, ReductionOp<T>());
+  if (threadIdx.x == 0) { result_broadcast = result; }
+  __syncthreads();
+  return result_broadcast;
+}
