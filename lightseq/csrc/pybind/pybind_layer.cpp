@@ -331,8 +331,8 @@ void assign_layer_weight_grad(const torch::Tensor &weights,
     layer->assign_weight_ptr(wptr);
     layer->assign_grad_ptr(gptr);
   }
-  std::cout << layer_name << " #" << layer_id << " bind weights and grads."
-            << std::endl;
+//   std::cout << layer_name << " #" << layer_id << " bind weights and grads."
+//             << std::endl;
   return;
 }
 

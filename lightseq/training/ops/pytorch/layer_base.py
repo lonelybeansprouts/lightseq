@@ -22,6 +22,7 @@ class TransformerEncoderLayerBase(nn.Module):
             fp16: bool  # fp16 presion
             local_rank: int  # rank in local node
             activation_fn: str = "relu"  # relu or gelu
+            g_ckp_softmax_layers: tuple = ()
 
         if "model" in kwargs:
             if kwargs["model"] not in MODEL_ARCH:

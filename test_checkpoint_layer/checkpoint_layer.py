@@ -24,6 +24,7 @@ from lightseq.training.ops.pytorch.util import (
 transformer_cuda_module = TransformerBuilder().load()
 
 _all_layer_grads = dict()
+_all_layer_softmax_out_caches = dict()
 
 def detach_variable(inputs: Tuple[Any, ...]) -> Tuple[torch.Tensor, ...]:
     if isinstance(inputs, tuple):
@@ -61,7 +62,8 @@ class LSTransformerEncoderFunc(Function):
             input = input.to(torch.half)
             input_mask = input_mask.to(torch.half)
 
-        # print('config.training:', config.training)
+        if config.layer_id in config.g_ckp_softmax_layers:
+            cuda_module.set_grad_checkpoint_cache_fp32(0, _all_layer_softmax_out_caches[config.layer_id], 1)
 
         (output,) = forward_func(
             layer_id,
@@ -76,6 +78,10 @@ class LSTransformerEncoderFunc(Function):
         if config.is_grad_enabled:
             ctx.save_for_backward(output, input, input_mask)
             ctx.config = config
+
+        if config.layer_id in config.g_ckp_softmax_layers:
+            cuda_module.reset_grad_checkpoint_cache_fp32(0)
+
         return output
 
     @staticmethod
@@ -97,6 +103,10 @@ class LSTransformerEncoderFunc(Function):
         if ctx.config.fp16:
             input_detached = input_detached.to(torch.half)
             input_mask_detached = input_mask_detached.to(torch.half)
+
+        if ctx.config.layer_id in ctx.config.g_ckp_softmax_layers:
+            cuda_module.set_grad_checkpoint_cache_fp32(0, _all_layer_softmax_out_caches[ctx.config.layer_id], 2)
+
         (output,) = forward_func(
             layer_id,
             input_detached,
@@ -122,6 +132,9 @@ class LSTransformerEncoderFunc(Function):
 
         grad = _all_layer_grads[ctx.config.layer_id]
 
+        if ctx.config.layer_id in ctx.config.g_ckp_softmax_layers:
+            cuda_module.reset_grad_checkpoint_cache_fp32(0)
+
         return (grad_input, None, grad, None)
 
 
@@ -144,7 +157,9 @@ class LSTransformerEncoderLayer(TransformerEncoderLayerBase):
         super(LSTransformerEncoderLayer, self).__init__()
 
         self.config = config
-        self.config.layer_id = LSTransformerEncoderLayer.layer_id    
+        self.config.layer_id = LSTransformerEncoderLayer.layer_id   
+
+        _all_layer_softmax_out_caches[self.config.layer_id] = torch.zeros((self.config.max_batch_tokens * self.config.max_seq_len * self.config.nhead), dtype=torch.float32).cuda()        
 
         LSTransformerEncoderLayer.layer_id = LSTransformerEncoderLayer.layer_id + 1
 
@@ -429,7 +444,6 @@ class LSGptEncoderLayer(LSTransformerEncoderLayer):
         )
 
     def create_cpp_layer(self):
-
         # create the layer in cuda kernels.
         cuda_module = transformer_cuda_module
         create_layer_func = (
@@ -492,6 +506,7 @@ def gen_ls_gpt_enc_config(training_args, config):
         fp16=training_args.fp16,
         local_rank=training_args.local_rank,
         activation_fn="gelu",
+        g_ckp_softmax_layers=() if config.g_ckp_softmax_layers is None else config.g_ckp_softmax_layers
     )
     return gpt_config
 
@@ -533,3 +548,26 @@ def ls_hf_gpt_enc_convert(model, training_args, config):
             model.transformer.h[i], training_args, config
         ).cuda()
 
+class TrainingArgs:
+    def __init__(self, fp16, local_rank):
+        self.fp16 = fp16
+        self.local_rank = local_rank
+
+class ModelConfig:
+    def __init__(self, max_position_embeddings, 
+                 hidden_size, 
+                 num_attention_heads, 
+                 attn_pdrop, 
+                 resid_pdrop, 
+                 num_hidden_layers, 
+                 max_batch_tokens,
+                 g_ckp_softmax_layers=None):
+        
+        self.max_position_embeddings = max_position_embeddings
+        self.hidden_size = hidden_size
+        self.num_attention_heads = num_attention_heads
+        self.attn_pdrop = attn_pdrop
+        self.resid_pdrop = resid_pdrop
+        self.num_hidden_layers = num_hidden_layers
+        self.max_batch_tokens = max_batch_tokens
+        self.g_ckp_softmax_layers = g_ckp_softmax_layers

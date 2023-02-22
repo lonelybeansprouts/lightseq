@@ -8,6 +8,8 @@ from transformers import GPT2Config, GPT2Model, GPT2PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithCrossAttentions
 from lightseq.training.ops.pytorch.quantization import disable_quant
 from tqdm import tqdm
+from checkpoint_layer import ls_hf_gpt_enc_convert, TrainingArgs, ModelConfig
+
 
 #
 class CoarseLM(GPT2PreTrainedModel):
@@ -108,21 +110,6 @@ class CoarseLM(GPT2PreTrainedModel):
             cross_attentions=transformer_outputs.cross_attentions,
         )
 
-class TrainingArgs:
-    def __init__(self, fp16, local_rank):
-        self.fp16 = fp16
-        self.local_rank = local_rank
-
-class ModelConfig:
-    def __init__(self, max_position_embeddings, hidden_size, num_attention_heads, attn_pdrop, resid_pdrop, num_hidden_layers, max_batch_tokens):
-        self.max_position_embeddings = max_position_embeddings
-        self.hidden_size = hidden_size
-        self.num_attention_heads = num_attention_heads
-        self.attn_pdrop = attn_pdrop
-        self.resid_pdrop = resid_pdrop
-        self.num_hidden_layers = num_hidden_layers
-        self.max_batch_tokens = max_batch_tokens
-
 def get_hf_gpt_emb_layer_params(layer):
     init_ws = []
     init_ws.append(layer.wte.weight.detach().clone())
@@ -130,7 +117,6 @@ def get_hf_gpt_emb_layer_params(layer):
     return init_ws
 
 def inject_ls_layer(model, training_args,  config):
-    from checkpoint_layer import ls_hf_gpt_enc_convert
     ls_hf_gpt_enc_convert(model, training_args, config)
     for i in range(config.num_hidden_layers):
         model.transformer.h[i].apply(disable_quant)
@@ -175,7 +161,8 @@ if __name__ == '__main__':
                          attn_pdrop=0.1, 
                          resid_pdrop=0.1, 
                          num_hidden_layers=layers, 
-                         max_batch_tokens = 6000)
+                         max_batch_tokens = 6000,
+                         g_ckp_softmax_layers = tuple(range(2)))
     inject_ls_layer(model, training_args, config)
 
     torch.cuda.empty_cache()
