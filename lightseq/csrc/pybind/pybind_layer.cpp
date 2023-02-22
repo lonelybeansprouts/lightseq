@@ -474,6 +474,32 @@ torch::Tensor quant_linear_layer_fw(const int layer_id,
   return outputs;
 }
 
+
+template <typename T>
+void set_grad_checkpoint_cache(const int layer_id, torch::Tensor &g_ckp_soft_out_tensor, int g_ckp_f_stage) {
+  auto soft_out_tensor = g_ckp_soft_out_tensor.contiguous();
+  CHECK_INPUT(soft_out_tensor);
+  T *g_ckp_soft_out_ptr = (T *)soft_out_tensor.data_ptr();
+
+  std::shared_ptr<TransformerEncoderLayer<T>> layer =
+      std::static_pointer_cast<TransformerEncoderLayer<T>>(
+      s_transformer_encoder_layers[layer_id]);
+  layer->set_grad_checkpoint_cache(g_ckp_soft_out_ptr, g_ckp_f_stage);
+  return;
+}
+
+template <typename T>
+void reset_grad_checkpoint_cache(const int layer_id) {
+  std::shared_ptr<TransformerEncoderLayer<T>> layer =
+      std::static_pointer_cast<TransformerEncoderLayer<T>>(
+      s_transformer_encoder_layers[layer_id]);
+  layer->reset_grad_checkpoint_cache();
+  return;
+}
+
+
+
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("transformer_encoder_layer_fw_fp32",
         &transformer_encoder_layer_fw<float>,
@@ -553,4 +579,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "Bind layer weights and grads");
   m.def("assign_layer_weight_grad_fp16", &assign_layer_weight_grad<__half>,
         "Bind layer weights and grads");
+  m.def("set_grad_checkpoint_cache_fp32", &set_grad_checkpoint_cache<float>,
+        "Set grad checkpoint cache");
+  m.def("reset_grad_checkpoint_cache_fp32", &reset_grad_checkpoint_cache<float>,
+        "Reset grad checkpoint cache");
 }

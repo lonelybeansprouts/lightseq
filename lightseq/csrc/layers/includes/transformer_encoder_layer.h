@@ -143,6 +143,20 @@ class TransformerEncoderLayer {
     gptr += 1;
   }
 
+  void set_grad_checkpoint_cache(T *g_ckp_soft_out_ptr, int g_ckp_f_stage){
+    _g_ckp_soft_out_ptr = g_ckp_soft_out_ptr;
+    _g_ckp_f_stage = g_ckp_f_stage;
+    if (! (_g_ckp_f_stage==0 || _g_ckp_f_stage==1 || _g_ckp_f_stage==2) ){
+      std::cerr<<"g_ck_f_stage must be either of 0, 1, 2 !\n";
+      std::abort();
+    }
+  }
+
+  void reset_grad_checkpoint_cache(){
+    _g_ckp_soft_out_ptr = NULL;
+    _g_ckp_f_stage = 0;
+  }
+
  private:
   void allocate_mem_buffer() {
     // allocate local gpu memory
@@ -277,6 +291,10 @@ class TransformerEncoderLayer {
   // shared GPU memory between layer
   static T *_shared_mem_ptr;
   static int8_t *_shared_quant_mem_ptr;
+
+  //checkpoint cache
+  int _g_ckp_f_stage = {0}; //1 : checkpoint forward stage one; 2 : checkpoint forward stage two   
+  T *_g_ckp_soft_out_ptr{NULL};
 
   // weights ptr
   const T *_attn_qkvw_ptr;

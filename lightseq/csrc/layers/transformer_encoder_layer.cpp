@@ -120,17 +120,31 @@ void TransformerEncoderLayer<T>::attn_layer_fw(const T *input_ptr,
                                        _hidden_size / _heads, _stream);
   }
 
-  // attention scores, q*k
-  _attn_scores.Forward(_batch_heads, _soft_out_ptr, k_tf_ptr, q_tf_ptr,
-                       _cublasHandle);
-
+  if (_g_ckp_f_stage==1 && _g_ckp_soft_out_ptr!=NULL){
+    // attention scores, q*k
+    _attn_scores.Forward(_batch_heads, _g_ckp_soft_out_ptr, k_tf_ptr, q_tf_ptr,
+                        _cublasHandle);
   // Softmax + Mask
-  _softmax.Forward(_soft_out_ptr, input_mask_ptr, _batch_size, _seq_len,
-                   _seq_len, _stream);
-
-  // attn prob dropout.
-  _attn_prob_dropout.dropout(_ctx_bufB_ptr, _soft_out_ptr,
-                             _batch_heads * _seq_len * _seq_len, _stream);
+    _softmax.Forward(_g_ckp_soft_out_ptr, input_mask_ptr, _batch_size, _seq_len,
+                    _seq_len, _stream);
+    // attn prob dropout.
+    _attn_prob_dropout.dropout(_ctx_bufB_ptr, _g_ckp_soft_out_ptr,
+                              _batch_heads * _seq_len * _seq_len, _stream);
+  }else if (_g_ckp_f_stage==2 && _g_ckp_soft_out_ptr!=NULL){
+    // attn prob dropout.
+    _attn_prob_dropout.dropout(_ctx_bufB_ptr, _g_ckp_soft_out_ptr,
+                              _batch_heads * _seq_len * _seq_len, _stream);
+  }else{
+    // attention scores, q*k
+    _attn_scores.Forward(_batch_heads, _soft_out_ptr, k_tf_ptr, q_tf_ptr,
+                        _cublasHandle);
+  // Softmax + Mask
+    _softmax.Forward(_soft_out_ptr, input_mask_ptr, _batch_size, _seq_len,
+                    _seq_len, _stream);
+    // attn prob dropout.
+    _attn_prob_dropout.dropout(_ctx_bufB_ptr, _soft_out_ptr,
+                              _batch_heads * _seq_len * _seq_len, _stream);    
+  }
 
   // attention context, score * v
   _attn_context.Forward(_batch_heads, buffer, v_tf_ptr, _ctx_bufB_ptr,
@@ -358,8 +372,18 @@ void TransformerEncoderLayer<T>::attn_layer_bw(const T *input_ptr,
   _attn_prob_dropout.d_dropout(grad_softmax_ptr,
                                _batch_heads * _seq_len * _seq_len, _stream);
 
-  _softmax.Backward(grad_softmax_ptr, _soft_out_ptr, _batch_size, _seq_len,
-                    _seq_len, _stream);
+
+  if (_g_ckp_f_stage==1 && _g_ckp_soft_out_ptr!=NULL){
+    std::cerr<<"_g_ckp_f_stage error, can not be 1 in backward! \n";
+  }else if (_g_ckp_f_stage==2 && _g_ckp_soft_out_ptr!=NULL){
+    // attn prob dropout.
+    _softmax.Backward(grad_softmax_ptr, _g_ckp_soft_out_ptr, _batch_size, _seq_len,
+                      _seq_len, _stream);
+  }else{
+    _softmax.Backward(grad_softmax_ptr, _soft_out_ptr, _batch_size, _seq_len,
+                    _seq_len, _stream);  
+  }
+
 
   // bw of q * k
   _attn_scores.Backward(_batch_heads, grad_softmax_ptr, k_tf_ptr, q_tf_ptr,
